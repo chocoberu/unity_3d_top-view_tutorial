@@ -4,14 +4,15 @@ using UnityEngine;
 
 [RequireComponent (typeof(PlayerController))] // Player 스크립트를 오브젝트에 붙일 때 PlayerController 또한 같이 붙이도록 강요함
 [RequireComponent (typeof(GunController))] // Player 스크립트를 오브젝트에 붙일 때 GunController 또한 같이 붙이도록 강요함
-public class Player : MonoBehaviour {
+public class Player : LivingEntity {
 
     public float moveSpeed = 5;
     PlayerController controller;
     Camera viewCamera;
     GunController gunController;
 	// Use this for initialization
-	void Start () {
+	protected override void Start () {
+        base.Start();
         controller = GetComponent<PlayerController>(); // PlayerController와 Player 스크립트가 같은 오브젝트에 붙어 있다고 가정
         gunController = GetComponent<GunController>();
         viewCamera = Camera.main;
