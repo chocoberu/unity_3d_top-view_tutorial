@@ -2,23 +2,27 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public class MapGenerator : MonoBehaviour {
+public class MapGenerator : MonoBehaviour
+{
+    public map[] maps;
+    public int mapIndex;
 
     public Transform tilePrefab;
-    public Vector2 mapSize;
+    
     public Transform obstaclePrefab;
+    public Transform navmeshFloor;
+    public Vector2 maxMapSize;
+    public Transform navmeshMaskPrefab;
 
-    [Range(0,1)]
-    public float outlienPercent;
+    [Range(0, 1)]
+    public float outlinePercent;
 
-    [Range(0,1)]
-    public float obstaclePercent; // 장애물을 몇개 만들지 정하는 변수
+    map currentMap;
 
     List<Coord> allTileCoords; //타일 좌표에 대한 리스트
     Queue<Coord> shuffledTileCoords;
-    public int seed = 10; // 랜덤 생성 시 필요한 seed 값
-
-    Coord mapCentre;
+    
+    public float tileSize;
 
     private void Start()
     {
@@ -26,19 +30,25 @@ public class MapGenerator : MonoBehaviour {
     }
     public void GenerateMap()
     {
+        currentMap = maps[mapIndex];
+        System.Random prng = new System.Random(currentMap.seed);
+        GetComponent<BoxCollider>().size = new Vector3(currentMap.mapSize.x * tileSize, 0.05f, currentMap.mapSize.y * tileSize);
+
+        //좌표들을 생성
         allTileCoords = new List<Coord>();
-        for (int x = 0; x < mapSize.x; x++)
+        for (int x = 0; x < currentMap.mapSize.x; x++)
         {
-            for (int y = 0; y < mapSize.y; y++)
+            for (int y = 0; y < currentMap.mapSize.y; y++)
             {
                 allTileCoords.Add(new Coord(x, y));
             }
         }
-        shuffledTileCoords = new Queue<Coord>(Utility.ShuffleArray(allTileCoords.ToArray(),seed));
-        mapCentre = new Coord((int)mapSize.x / 2, (int)mapSize.y / 2);
+        
+        shuffledTileCoords = new Queue<Coord>(Utility.ShuffleArray(allTileCoords.ToArray(), currentMap.seed));
 
+        //맵 홀더 오브젝트 생성 
         string holderName = "Generated Map"; // 타일들을 자식으로 묶을 오브젝트의 이름
-        if(transform.Find(holderName))
+        if (transform.Find(holderName))
         {
             DestroyImmediate(transform.Find(holderName).gameObject); // 에디터에서 호출할 것이므로 DestroyImmediate()
         }
@@ -46,72 +56,114 @@ public class MapGenerator : MonoBehaviour {
         Transform mapHolder = new GameObject(holderName).transform;
         mapHolder.parent = transform;
 
-        for(int x = 0; x < mapSize.x; x++)
+        //타일들을 스폰
+        for (int x = 0; x < currentMap.mapSize.x; x++)
         {
-            for(int y = 0; y < mapSize.y; y++)
+            for (int y = 0; y < currentMap.mapSize.y; y++)
             {
-                Vector3 tilePosition = CoordToPosition(x, y); //타일을 소환할 위치 계산을 위해
-                Transform newTile = Instantiate(tilePrefab, tilePosition, Quaternion.Euler(Vector3.right * 90)) as Transform; // 타일 생성
-
-                newTile.localScale = Vector3.one * (1 - outlienPercent); // 테두리 영역만큼 타일의 크기를 줄여 할당
+                Vector3 tilePosition = CoordToPosition(x, y);
+                Transform newTile = Instantiate(tilePrefab, tilePosition, Quaternion.Euler(Vector3.right * 90)) as Transform;
+                newTile.localScale = Vector3.one * (1 - outlinePercent) * tileSize;
                 newTile.parent = mapHolder;
             }
         }
 
-        bool[,] obstacleMap = new bool[(int)mapSize.x, (int)mapSize.y];
         //장애물 생성 과정
-        int obstacleCount = (int)(mapSize.x * mapSize.y * obstaclePercent); // 장애물 생성 개수
+        bool[,] obstacleMap = new bool[(int)currentMap.mapSize.x, (int)currentMap.mapSize.y];
+
+        int obstacleCount = (int)(currentMap.mapSize.x * currentMap.mapSize.y * currentMap.obstaclePercent);
         int currentObstacleCount = 0;
+
         for (int i = 0; i < obstacleCount; i++)
         {
             Coord randomCoord = GetRandomCoord();
             obstacleMap[randomCoord.x, randomCoord.y] = true;
             currentObstacleCount++;
-            if (randomCoord != mapCentre && MapIsFullyAccessible(obstacleMap, currentObstacleCount))
+
+            if (randomCoord != currentMap.mapCentre && MapIsFullyAccessible(obstacleMap, currentObstacleCount))
             {
+                float obstacleHeight = Mathf.Lerp(currentMap.minObstacleHeight, currentMap.maxObstacleHeight, (float)prng.NextDouble());
                 Vector3 obstaclePosition = CoordToPosition(randomCoord.x, randomCoord.y);
-                Transform newObstacle = Instantiate(obstaclePrefab, obstaclePosition + Vector3.up * 0.5f, Quaternion.identity) as Transform;
+
+                Transform newObstacle = Instantiate(obstaclePrefab, obstaclePosition + Vector3.up * obstacleHeight / 2, Quaternion.identity) as Transform;
                 newObstacle.parent = mapHolder;
+                newObstacle.localScale = new Vector3((1 - outlinePercent) * tileSize, obstacleHeight, (1 - outlinePercent) * tileSize);
+
+                Renderer obstacleRenderer = newObstacle.GetComponent<Renderer>();
+                Material obstacleMaterial = new Material(obstacleRenderer.sharedMaterial);
+                float colourPercent = randomCoord.y / (float)currentMap.mapSize.y;
+                obstacleMaterial.color = Color.Lerp(currentMap.foregroundColour, currentMap.backgroundColour, colourPercent);
+                obstacleRenderer.sharedMaterial = obstacleMaterial;
             }
             else
             {
                 obstacleMap[randomCoord.x, randomCoord.y] = false;
-                currentObstacleCount --;
+                currentObstacleCount--;
             }
         }
+
+        // 내브메쉬 마스크 생성
+        Transform maskLeft = Instantiate(navmeshMaskPrefab, Vector3.left * (currentMap.mapSize.x + maxMapSize.x) / 4f * tileSize, Quaternion.identity) as Transform;
+        maskLeft.parent = mapHolder;
+        maskLeft.localScale = new Vector3((maxMapSize.x - currentMap.mapSize.x) / 2f, 1, currentMap.mapSize.y) * tileSize;
+
+        Transform maskRight = Instantiate(navmeshMaskPrefab, Vector3.right * (currentMap.mapSize.x + maxMapSize.x) / 4f * tileSize, Quaternion.identity) as Transform;
+        maskRight.parent = mapHolder;
+        maskRight.localScale = new Vector3((maxMapSize.x - currentMap.mapSize.x) / 2f, 1, currentMap.mapSize.y) * tileSize;
+
+        Transform maskTop = Instantiate(navmeshMaskPrefab, Vector3.forward * (currentMap.mapSize.y + maxMapSize.y) / 4f * tileSize, Quaternion.identity) as Transform;
+        maskTop.parent = mapHolder;
+        maskTop.localScale = new Vector3(maxMapSize.x, 1, (maxMapSize.y - currentMap.mapSize.y) / 2f) * tileSize;
+
+        Transform maskBottom = Instantiate(navmeshMaskPrefab, Vector3.back * (currentMap.mapSize.y + maxMapSize.y) / 4f * tileSize, Quaternion.identity) as Transform;
+        maskBottom.parent = mapHolder;
+        maskBottom.localScale = new Vector3(maxMapSize.x, 1, (maxMapSize.y - currentMap.mapSize.y) / 2f) * tileSize;
+
+
+        navmeshFloor.localScale = new Vector3(maxMapSize.x, maxMapSize.y) * tileSize;
     }
 
     bool MapIsFullyAccessible(bool[,] obstacleMap, int currentObstacleCount)
     {
         bool[,] mapFlags = new bool[obstacleMap.GetLength(0), obstacleMap.GetLength(1)];
         Queue<Coord> queue = new Queue<Coord>();
-        queue.Enqueue(mapCentre);
-        mapFlags[mapCentre.x, mapCentre.y] = true;
+        queue.Enqueue(currentMap.mapCentre);
+        mapFlags[currentMap.mapCentre.x, currentMap.mapCentre.y] = true;
 
-        while(queue.Count > 0)
+        int accessibleTileCount = 1;
+
+        while (queue.Count > 0)
         {
             Coord tile = queue.Dequeue();
 
-            for(int x = -1; x <= 1; x++)
+            for (int x = -1; x <= 1; x++)
             {
-                for(int y = -1; y <= 1; y++)
+                for (int y = -1; y <= 1; y++)
                 {
                     int neighbourX = tile.x + x;
                     int neighbourY = tile.y + y;
-                    if(x == 0 || y == 0)
+                    if (x == 0 || y == 0)
                     {
-                        if(neighbourX >= 0 && neighbourX < obstacleMap.GetLength(0) && neighbourY >= 0 && neighbourY < obstacleMap.GetLength(1))
+                        if (neighbourX >= 0 && neighbourX < obstacleMap.GetLength(0) && neighbourY >= 0 && neighbourY < obstacleMap.GetLength(1))
                         {
-
+                            if (!mapFlags[neighbourX, neighbourY] && !obstacleMap[neighbourX, neighbourY])
+                            {
+                                mapFlags[neighbourX, neighbourY] = true;
+                                queue.Enqueue(new Coord(neighbourX, neighbourY));
+                                accessibleTileCount++;
+                            }
                         }
                     }
                 }
             }
         }
+
+        int targetAccessibleTileCount = (int)(currentMap.mapSize.x * currentMap.mapSize.y - currentObstacleCount);
+        return targetAccessibleTileCount == accessibleTileCount;
     }
-    Vector3 CoordToPosition(int x,int y) //타일을 소환할 위치 계산을 위해
+    Vector3 CoordToPosition(int x, int y) //타일을 소환할 위치 계산을 위해
     {
-        return new Vector3(-mapSize.x / 2 + 0.5f + x, 0, -mapSize.y / 2 + 0.5f + y);
+        return new Vector3(-currentMap.mapSize.x / 2f + 0.5f + x, 0, -currentMap.mapSize.y / 2f + 0.5f + y) * tileSize;
     }
     public Coord GetRandomCoord() // 큐로부터 다음 아이템을 얻어 랜덤 좌표에 반환
     {
@@ -119,12 +171,42 @@ public class MapGenerator : MonoBehaviour {
         shuffledTileCoords.Enqueue(randomCoord);
         return randomCoord;
     }
+
+    [System.Serializable]
     public struct Coord
     {
         public int x, y;
-        public Coord(int _x,int _y)
+        public Coord(int _x, int _y)
         {
             x = _x; y = _y;
+        }
+        public static bool operator ==(Coord c1, Coord c2)
+        {
+            return c1.x == c2.x && c1.y == c2.y;
+        }
+        public static bool operator !=(Coord c1, Coord c2)
+        {
+            return !(c1 == c2);
+        }
+    }
+    [System.Serializable]
+    public class map
+    {
+        public Coord mapSize;
+        [Range(0,1)]
+        public float obstaclePercent;
+        public int seed;
+        public float minObstacleHeight;
+        public float maxObstacleHeight;
+        public Color foregroundColour;
+        public Color backgroundColour;
+
+        public Coord mapCentre
+        {
+            get
+            {
+                return new Coord(mapSize.x / 2, mapSize.y / 2);
+            }
         }
     }
 }
